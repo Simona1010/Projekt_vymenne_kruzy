@@ -21,7 +21,7 @@ R, R Markdown, `readxl`, `xts`, `astsa`, `forecast`, `tseries`, `FinTS`, `rugarc
 
 ## Súbory projektu
 
-- `eurusd_gbpusd(1).Rmd` - zdrojový dokument s kódom a interpretáciou.
+- `eurusd_gbpusd.Rmd` - zdrojový dokument s kódom a interpretáciou.
 - `eurusd_gbpusd.html` - vykreslený výstup analýzy.
 - `eurusd.xlsx`, `gbpusd.xlsx` - vstupné dátové súbory.
 
