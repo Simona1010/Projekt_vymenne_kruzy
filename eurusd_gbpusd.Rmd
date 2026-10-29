@@ -1,0 +1,813 @@
+---
+title: "EUR/USD  GBP/USD"
+author: "Simona Mikovčíková"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: cerulean
+    highlight: tango
+    self-contained: true
+    code_folding: show
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# 1. Výber a spracovanie finančných časových radov
+
+## Výber údajov
+
+Pre analýzu boli zvolené dva finančné časové rady: - **EUR/USD** –
+výmenný kurz eura voči americkému doláru - **GBP/USD** – výmenný kurz
+britskej libry voči americkému doláru
+
+Údaje boli získané vo forme denného kurzového vývoja za obdobie **od 4.
+januára 2021 do 31. decembra 2024** zo stránky
+<https://fx.sauder.ubc.ca/fxdata.php>.
+
+```{r message=FALSE, warning=FALSE}
+library(readxl)
+library(xts)
+library(astsa)#acf2
+library(forecast)#Arima
+library(tseries)#jarque.bera.test
+library(FinTS)#ArchTest
+library(rugarch) #GARCH modely
+
+```
+
+```{r}
+# Načítanie dát z excelu
+eurusd <- read_excel("eurusd.xlsx")
+gbpusd <- read_excel("gbpusd.xlsx")
+
+# Úprava dát 
+eurusd$Date  <- as.Date(eurusd$Date)
+eurusd$`EUR/USD` <- as.numeric(eurusd$`EUR/USD`)
+gbpusd$Date  <- as.Date(gbpusd$Date)
+gbpusd$`GBP/USD`<- as.numeric(gbpusd$`GBP/USD`)
+
+# Vytvorenie xts objektov a premenných
+eur_xts <- xts(eurusd$`EUR/USD`, order.by = eurusd$Date)
+colnames(eur_xts) <- "EURUSD"
+
+gbp_xts <- xts(gbpusd$`GBP/USD`, order.by = gbpusd$Date)
+colnames(gbp_xts) <- "GBPUSD"
+
+# Spojenie oboch kurzov do jedného objektu
+kurzy <- merge(eur_xts, gbp_xts)
+
+# Výpočet prirodzených logaritmov kurzov
+logkurzy <- log(kurzy)
+```
+
+```{r}
+# Grafické znázornenie priebehu výmenných kurzov
+plot(index(kurzy), kurzy$EURUSD, type = "l", col = "blue", lwd = 2,
+     main = "Vývoj výmenných kurzov EUR/USD a GBP/USD",
+     xlab = "Dátum", ylab = "Kurz",
+     ylim = range(kurzy, na.rm = TRUE))
+
+lines(index(kurzy), kurzy$GBPUSD, col = "darkgreen", lwd = 2)
+
+legend("topright", legend = c("EUR/USD", "GBP/USD"),
+       col = c("blue", "darkgreen"), lwd = 2, bty = "n")
+```
+
+Graf zobrazuje vývoj výmenných kurzov **EUR/USD** (modrá čiara) a
+**GBP/USD** (zelená čiara) od roku 2021 do konca roku 2024. Vidíme, že
+oba kurzy mali podobný vývoj.
+
+# 2. ACF a PACF – testovanie stacionarity
+
+Pre časové rady logaritmov kurzov EUR/USD a GBP/USD boli vytvorené grafy
+ACF a PACF.
+
+```{r}
+# ACF a PACF pre logaritmus EUR/USD
+acf2(logkurzy$EURUSD, main = "ACF a PACF pre log(EUR/USD)")
+
+# ACF a PACF pre logaritmus GBP/USD
+acf2(logkurzy$GBPUSD, main = "ACF a PACF pre log(GBP/USD)")
+```
+
+Z ACF grafov je vidieť, že **autokorelačné koeficienty klesajú veľmi
+pomaly** a PACF grafoch je významný len **prvý koeficient**.
+
+Na základe týchto výsledkov predpokladáme, že časové rady logaritmov
+kurzov sú **integrovaného rádu I(1)**. Preto budeme ďalej pracovať s ich
+**prvými diferenciami**, teda **spojitými výnosmi**.
+
+```{r}
+# Výpočet denných spojitých výnosov (1. diferencie log-kurzov)
+logreturns <- na.omit(diff(logkurzy))
+```
+
+```{r}
+# Grafické znázornenie spojitých výnosov 
+plot(logreturns, main = "Denné spojité výnosy kurzov EUR/USD a GBP/USD",
+     col = c("blue", "darkgreen"), lwd = 1.5)
+
+```
+
+Graf zobrazuje **spojité výnosy** (prvé diferencie prirodzených
+logaritmov) kurzov EUR/USD(modrá čiara) a GBP/USD(zelená čiara) v období
+od januára 2021 do decembra 2024.
+
+Na rozdiel od pôvodných kurzov,tieto výnosy sa pohybujú **okolo nulovej
+hodnoty**, čo je typické správanie **stacionárneho časového radu**.
+Zároveň je vidieť, že rozptyl výnosov nie je konštantný, čo naznačuje
+**kolísavosť volatility** v čase – potenciálnu prítomnosť
+heteroskedasticity.
+
+# 3. Výber ARMA modelov pre spojité výnosy
+
+Na výber vhodných ARMA modelov pre denné výnosy výmenných kurzov EUR/USD
+a GBP/USD bola použitá funkcia `auto.arima()`, ktorá na základe
+informačných kritérií (AIC, prípadne BIC) automaticky určí najvhodnejšie
+kombinácie parametrov AR (autoregresia) a MA (klzavý priemer).
+
+```{r}
+# Automatický výber ARMA modelu pre EUR/USD výnosy
+auto_arma_eur <- auto.arima(logreturns$EURUSD, seasonal = FALSE, ic = "aic")
+summary(auto_arma_eur)
+```
+
+```{r}
+# Manuálny výber pre EUR/USD
+arma01_eur <- Arima(logreturns$EURUSD, order = c(0, 0, 1))
+arma10_eur <- Arima(logreturns$EURUSD, order = c(1, 0, 0))
+arma11_eur <- Arima(logreturns$EURUSD, order = c(1, 0, 1))
+arma21_eur <- Arima(logreturns$EURUSD, order = c(2, 0, 1))
+
+# Porovnanie podľa AIC
+AIC(arma01_eur, arma10_eur, arma11_eur, arma21_eur)
+```
+
+### EUR/USD:
+
+Pre výnosy EUR/USD bol vybraný pomocou automatu model **ARMA(0,1) bez
+konštanty**, čo znamená, že proces je modelovaný pomocou jedného
+koeficientu klzavého priemeru (MA). MA(1) koeficient je:
+
+-   **ma1 = 0.0753**
+
+AIC modelu: **–8013.43**
+
+Pre EUR/USD sme vyskúšali štyri modely: **ARMA(0,1)**, **ARMA(1,0)**,
+**ARMA(1,1)** a **ARMA(2,1)**. Najnižšiu hodnotu AIC dosiahol model
+ARMA(1,0). **Automaticky vybraný model ARMA(0,1) bez konštanty** má ešte
+nižšie AIC (**–8013.43**) a teda ho možno považovať za najvhodnejší.
+
+```{r}
+# Automatický výber ARMA modelu pre GBP/USD výnosy
+auto_arma_gbp <- auto.arima(logreturns$GBPUSD, seasonal = FALSE, ic = "aic")
+summary(auto_arma_gbp)
+```
+
+```{r}
+
+# Manuálny výber pre GBP/USD
+arma11_gbp <- Arima(logreturns$GBPUSD, order = c(1, 0, 1))
+arma22_gbp <- Arima(logreturns$GBPUSD, order = c(2, 0, 2))
+arma23_gbp <- Arima(logreturns$GBPUSD, order = c(2, 0, 3))
+arma33_gbp <- Arima(logreturns$GBPUSD, order = c(3, 0, 3))
+
+# Porovnanie podľa AIC
+AIC(arma11_gbp, arma22_gbp, arma23_gbp, arma33_gbp)
+```
+
+### GBP/USD:
+
+Pre výnosy GBP/USD bol automatom vybraný model **ARMA(2,3) bez
+konštanty**, ktorý zahŕňa dva AR a tri MA koeficienty. Významné
+parametre:
+
+-   **ar1 = 1.4662**, **ar2 = –0.9330**
+-   **ma1 = –1.3590**, **ma2 = 0.7275**, **ma3 = 0.1221**
+
+AIC modelu: **–7713.45**
+
+Pre výnosy GBP/USD:sme vyskúšali štyri modely: **ARMA(1,1)**,
+**ARMA(2,2)**, **ARMA(2,3)** a **ARMA(3,3)**. Najnižšiu hodnotu AIC
+dosiahol model **ARMA(2,3) s nulovou strednou** a preto bol vybraný ako
+najvhodnejší spomedzi porovnávaných modelov.
+
+### Overenie stacionarity a invertovateľnosti
+
+Aby bolo možné považovať ARMA model za stacionárny a invertovateľný,
+musia **korene charakteristických rovníc** AR a MA časti ležať **mimo
+jednotkového kruhu** (t. j. ich absolútna hodnota musí byť väčšia ako
+1).
+
+### EUR/USD – ARMA(0,1)
+
+```{r}
+# Model bez konštanty (ako z auto.arima)
+arma01_eur <- Arima(logreturns$EURUSD, order = c(0, 0, 1), include.mean = FALSE)
+
+# MA(1) – inverznosť
+ma1_coef <- arma01_eur$coef["ma1"]
+ma_roots <- polyroot(c(1, ma1_coef))
+abs(ma_roots)        # absolútne hodnoty koreňov
+1/ma_roots           # inverzné korene patria do jednotkového kruhu
+
+
+# Pre EUR/USD model ARMA(0,1)
+arma_eur <- Arima(logreturns$EURUSD, order = c(0, 0, 1), include.mean = FALSE)
+autoplot(arma_eur)
+```
+
+Model obsahuje iba MA(1) zložku. Výpočet ukázal, že **absolútna hodnota
+koreňa MA časti je väčšia ako 1**, čo znamená, že model je
+**invertovateľný**.
+
+### GBP/USD – ARMA(2,3)
+
+```{r}
+arma23_gbp <- Arima(logreturns$GBPUSD, order = c(2, 0, 3), include.mean = FALSE)
+
+# AR(2) – stacionarita
+ar1 <- arma23_gbp$coef["ar1"]
+ar2 <- arma23_gbp$coef["ar2"]
+ar_roots <- polyroot(c(1, -ar1, -ar2))
+abs(ar_roots)        # absolútne hodnoty koreňov
+1/ar_roots           # inverzné korene (AR časť)patria do jednotkového kruhu
+
+# MA(3) – invertovateľnosť
+ma1 <- arma23_gbp$coef["ma1"]
+ma2 <- arma23_gbp$coef["ma2"]
+ma3 <- arma23_gbp$coef["ma3"]
+ma_roots <- polyroot(c(1, ma1, ma2, ma3))
+abs(ma_roots)        # absolútne hodnoty koreňov
+1/ma_roots           # inverzné korene (MA časť) patria do jednotkového kruhu
+
+autoplot(arma23_gbp)
+```
+
+Model obsahuje dve AR a tri MA zložky. Výpočet ukázal, že absolútne
+hodnoty všetkých koreňov AR časti sú väčšie ako 1, čo znamená, že model
+je **stacionárny** . Rovnako aj všetky korene MA časti ležia mimo
+jednotkového kruhu, čím je splnená podmienka **invertovateľnosti** .
+
+## Diagnostika rezíduí ARIMA modelov
+
+```{r}
+# Reziduá a ich štvorce
+res_eur <- residuals(arma01_eur)
+res2_eur <- res_eur^2
+
+res_gbp <- residuals(arma23_gbp)
+res2_gbp <- res_gbp^2
+```
+
+```{r}
+# Veľkosť výberu a maximálny počet lagov (T/4)
+T <- length(res_eur)
+max_lag <- floor(T / 4)
+max_lag
+# Počet parametrov (fitdf)
+fitdf_eur <- 1  # ARMA(0,1)
+fitdf_gbp <- 5  # ARMA(2,3)
+```
+
+## Ljung-Box test na rezíduá
+
+Na testovanie správnosti špecifikácie ARIMA(0,0,1) a ARIMA(2,0,3) modelu
+pre výnosy EUR/USD a GBP/USD sme aplikovali Ljung-Boxov test na:
+
+1.  **Rezíduá** – testuje, či sú nekorelované (t. j. či model dostatočne
+    vysvetľuje dynamiku).
+2.  **Štvorce rezíduí** – testuje, či je prítomný **ARCH efekt**
+    (nestálosť rozptylu).
+
+Testovanie bolo vykonané pre oneskorenia od **3 do 248**, pričom sme
+zvolili počet parametrov pre model ARIMA(0,0,1) jeden parameter
+`fitdf = 1` a pre model ARIMA(2,0,3) päť parameterov `fitdf = 5`
+
+```{r}
+#EUR/USD
+#ARIMA(0,0,1)
+
+stat <- c()
+p_value <- c()
+df <- c()
+
+stat2 <- c() 
+p_value2 <- c() 
+df2 <- c()
+
+for (x in 3:max_lag) {
+  #reziduá
+  test <- Box.test(res_eur, lag = x, type = "Ljung-Box", fitdf = fitdf_eur)
+  stat[x] <- test$statistic
+  p_value[x] <- test$p.value
+  df[x] <- test$parameter
+  
+  #štvorce reziduí
+  test2 <- Box.test(res2_eur, lag = x, type = "Ljung-Box", fitdf = fitdf_eur)
+  stat2[x] <- test2$statistic
+  p_value2[x] <- test2$p.value
+  df2[x] <- test2$parameter
+}
+
+# Tabuľka výsledkov pre rezíduá
+ljung_eur_resid <- cbind(Lag = 3:max_lag, Statistic = stat[3:max_lag], P_value = p_value[3:max_lag], DF = df[3:max_lag])
+ljung_eur_resid2 <- cbind(Lag = 3:max_lag, Stat = stat2[3:max_lag], P = p_value2[3:max_lag])
+#ljung_eur_resid
+#ljung_eur_resid2
+```
+
+```{r}
+# Jarque-Bera test na normálnosť rezíduí
+jarque.bera.test(res_eur)
+
+# ARCH LM test – testovanie prítomnosti ARCH efektu
+ArchTest(res_eur, lags = 1)  
+```
+
+### Diagnostika rezíduí modelu ARMA(0,1) – EUR/USD
+
+#### Ljung-Box test na rezíduá
+
+Ljung-Box test bol aplikovaný na rezíduá z modelu ARMA(0,1) s cieľom
+overiť ich nekorelovanosť. Výsledky ukazujú, že:
+
+-   Pre lagy 3 až 248 sú **p-hodnoty väčšinou vyššie ako 0.05**, čo
+    znamená, že **nulová hypotéza o nekorelovanosti sa nezamieta**.
+-   Teda môžeme **považovať rezíduá za nekorelované**.
+
+#### Ljung-Box test na štvorce rezíduí
+
+Na štvorce rezíduí bol aplikovaný rovnaký test s cieľom zistiť
+prítomnosť **ARCH efektu**:
+
+-   Už od najnižších lagov (lag 3 a ďalej) sú **p-hodnoty veľmi nízke
+    (\<\< 0.01)** a rýchlo klesajú až k hodnote 0.000000.
+-   Výsledok indikuje **prítomnosť ARCH efektu**.
+
+#### Jarque-Bera test – normalita rezíduí
+
+Výsledok testu:
+
+-   JB štatistika = 145.05
+-   p-hodnota \< 2.2e-16
+
+→ **Zamietame nulovú hypotézu o normalite rozdelenia rezíduí.**\
+Rezíduá modelu ARMA(0,1) pre výnosy EUR/USD nemajú normálne rozdelenie.
+
+#### ARCH LM test – homoskedasticita
+
+Výsledok testu:
+
+-   Chi-squared = 16.846
+-   p-hodnota = 4.053e-05
+
+→ **Zamietame nulovú hypotézu o neprítomnosti ARCH efektu.**\
+To znamená, že v reziduách je **prítomný ARCH efekt**, teda rozptyl nie
+je konštantný, ale sa mení v čase.
+
+#### Záver
+
+Pre model ARMA(0,1) na výnosy EUR/USD: - Rezíduá **nie sú korelované** -
+Rezíduá **nie sú normálne rozdelené** - Výrazne sa prejavuje **ARCH
+efekt**
+
+```{r}
+#GBP/USD
+#ARIMA(2,0,3)
+
+stat <- c()
+p_value <- c()
+df <- c()
+
+stat2 <- c() 
+p_value2 <- c() 
+df2 <- c()
+
+for (x in 6:max_lag) {
+  #reziduá
+  test <- Box.test(res_gbp, lag = x, type = "Ljung-Box", fitdf = fitdf_gbp)
+  stat[x] <- test$statistic
+  p_value[x] <- test$p.value
+  df[x] <- test$parameter
+  
+  #štvorce reziduí
+  test2 <- Box.test(res2_gbp, lag = x, type = "Ljung-Box", fitdf = fitdf_gbp)
+  stat2[x] <- test2$statistic
+  p_value2[x] <- test2$p.value
+  df2[x] <- test2$parameter
+}
+
+# Tabuľka výsledkov pre rezíduá
+ljung_gbp_resid <- cbind(Lag = 6:max_lag, Statistic = stat[6:max_lag], P_value = p_value[6:max_lag], DF = df[6:max_lag])
+ljung_gbp_resid2 <- cbind(Lag = 6:max_lag, Statistic = stat2[6:max_lag], P_value = p_value2[6:max_lag], DF = df2[6:max_lag])
+#ljung_gbp_resid
+#ljung_gbp_resid2
+```
+
+```{r}
+# Jarque-Bera test na normálnosť rezíduí
+jarque.bera.test(res_gbp)
+
+# ARCH LM test – testovanie prítomnosti ARCH efektu
+ArchTest(res_gbp, lags = 1)  
+```
+
+### Diagnostika rezíduí modelu ARMA(2,3) – GBP/USD
+
+#### Ljung-Box test na rezíduá
+
+Ljung-Box test bol aplikovaný na rezíduá z modelu ARMA(2,3) pre výnosy
+GBP/USD. Výsledky ukazujú, že:
+
+-   Pre lagy od 6 do 248 sú **p-hodnoty jednoznačne vyššie ako 0.05**,
+    čo znamená, že **rezíduá sú nekorelované**.
+
+#### Ljung-Box test na štvorce rezíduí
+
+Testovanie bolo následne aplikované na štvorce rezíduí za účelom
+detekcie **ARCH efektu**:
+
+-   Výsledky ukazujú, že už od lagov 6 až po 248 sú **p-hodnoty nulové**
+    .
+-   Znamená to silnú prítomnosť **heteroskedasticity v reziduách** –
+    **ARCH efekt**.
+
+#### Jarque-Bera test – normalita rezíduí
+
+Výsledok testu:
+
+-   JB štatistika = 557.29\
+-   p-hodnota \< 2.2e-16
+
+→ **Zamietame nulovú hypotézu o normalite rozdelenia rezíduí.**\
+Rezíduá modelu ARMA(2,3) pre výnosy GBP/USD **nemajú normálne
+rozdelenie**, čo je v súlade s očakávaniami pre finančné časové rady.
+
+#### ARCH LM test – homoskedasticita
+
+Výsledok testu:
+
+-   Chi-squared = 41.652\
+-   p-hodnota = 1.09e-10
+
+→ **Zamietame nulovú hypotézu o neprítomnosti ARCH efektu.**\
+V reziduách je výrazne prítomný **ARCH efekt**.
+
+#### Záver
+
+Pre model ARMA(2,3) na výnosy GBP/USD platí:
+
+-   Rezíduá **nie sú korelované**
+-   Rezíduá **nie sú normálne rozdelené**
+-   ARCH efekt je **výrazne prítomný**
+
+# 4. Odhad modelov GARCH(1,1), EGARCH(1,1), GJR(1,1)
+
+Pre výnosy EUR/USD a GBP/USD boli odhadnuté tri modely triedy ARCH:
+**GARCH(1,1), EGARCH(1,1), GJR(1,1)**.
+
+## EUR/USD – model ARMA(0,1) + GARCH typy
+
+```{r}
+# GARCH(1,1) modelu pre EUR/USD 
+spec_garch_eur <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1,1)),  #  GARCH(1,1)
+  mean.model = list(armaOrder = c(0,1), include.mean = FALSE)  # ARMA(0,1) bez konstanty
+)
+fit_garch_eur <- ugarchfit(spec = spec_garch_eur, data = logreturns$EURUSD)
+fit_garch_eur
+fit_garch_eur@fit$persistence
+```
+
+### GARCH(1,1)
+
+-   **Perzistencia (alpha1 + beta1)**: 0.0329 + 0.9582 = **0.9911** →
+    vysoká zotrvačnosť šokov.
+-   **Parametre sú štatisticky významné**, ale robustné odhady znižujú
+    ich významnosť.
+-   **Ljung-Box testy** a **ARCH LM testy** ukazujú že rezíduá nie sú
+    korelované a nebola potvrdená prítomnosťt ARCH efektu.
+-   **AIC = –8.1403**
+
+```{r}
+# EGARCH(1,1) modelu pre EUR/USD 
+spec_egarch_eur <- ugarchspec(
+  variance.model = list(model = "eGARCH", garchOrder = c(1,1)),  # exponenciálny GARCH
+  mean.model = list(armaOrder = c(0,1), include.mean = FALSE)
+)
+fit_egarch_eur <- ugarchfit(spec = spec_egarch_eur, data = logreturns$EURUSD)
+fit_egarch_eur
+fit_egarch_eur@fit$persistence
+```
+
+### EGARCH(1,1)
+
+-   **Perzistencia** ≈ **0.9927** → vysoká zotrvačnosť šokov
+-   **Asymetria**: gamma1 = 0.0618,štatisticky významný → asymetrický
+    efekt je prítomný, ide o pákový efekt
+-   alpha1 = -0.0243, štatisticky významný → asymetria vo volatilite
+    bola potvrdená
+-   beta1 = 0.9927 → vysoká zotrvačnosť vo volatilite
+-   **Ljung-Box testy** a **ARCH LM testy** ukazujú že rezíduá nie sú
+    korelované a nebola potvrdená prítomnosťt ARCH efektu.
+-   AIC = **-8.1451**.
+
+```{r}
+# --- Špecifikácia a odhad GJR(1,1) modelu pre EUR/USD ---
+spec_gjr_eur <- ugarchspec(
+  variance.model = list(model = "gjrGARCH", garchOrder = c(1,1)),  # GJR model
+  mean.model = list(armaOrder = c(0,1), include.mean = FALSE)
+)
+fit_gjr_eur <- ugarchfit(spec = spec_gjr_eur, data = logreturns$EURUSD)
+fit_gjr_eur
+fit_gjr_eur@fit$persistence
+```
+
+### GJR(1,1)
+
+-   **Perzistencia**: alpha1 + beta1 + 0.5\*gamma1 ≈ 0.0077 + 0.9734 +
+    0.0142 = **0.9953** → vysoká zotrvačnosť šokov.
+-   alpha1 = 0.0077 → nie je štatisticky významný
+-   beta1 = 0.9734 → vysoká zotrvačnosť vo volatilite
+-   Asymetrický parameter gamma1 = 0.0285, ale v robustnom odhade **nie
+    je štatisticky významný**.
+-   **Ljung-Box testy** a **ARCH LM testy** ukazujú že rezíduá nie sú
+    korelované a nebola potvrdená prítomnosťt ARCH efektu.
+-   AIC = **–8.1402**.
+
+### Záver
+
+-   **Najvhodnejší model pre EUR/USD**: **EGARCH(1,1)**
+-   Jeho parametre sú štatisticky významné (vrátane gamma1), čo znamená,
+    že model **zachytáva asymetriu vo volatilite**, ktorú štandardné
+    GARCH nedokáže.
+-   EGARCH má **najnižšiu hodnotu AIC**.
+
+## GBP/USD – model ARMA(2,3) + GARCH typy
+
+```{r}
+# GARCH(1,1) pre GBP/USD
+spec_garch_gbp <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
+  mean.model = list(armaOrder = c(2,3), include.mean = FALSE),
+  distribution.model = "norm"
+)
+fit_garch_gbp <- ugarchfit(spec = spec_garch_gbp, data = logreturns$GBPUSD)
+fit_garch_gbp
+fit_garch_gbp@fit$persistence
+```
+
+### GARCH(1,1)
+
+-   **Perzistencia = 0.9863**
+-   Všetky parametre okrem beta1 sú štatisticky nevýznamné podľa
+    robustných odhadov.
+-   **Ljung-Box testy** a **ARCH LM testy** ukazujú že rezíduá nie sú
+    korelované a nebola potvrdená prítomnosťt ARCH efektu.
+-   **AIC = -7.9078**
+
+```{r}
+# EGARCH(1,1) pre GBP/USD
+spec_egarch_gbp <- ugarchspec(
+  variance.model = list(model = "eGARCH", garchOrder = c(1,1)),
+  mean.model = list(armaOrder = c(2,3), include.mean = FALSE),
+  distribution.model = "norm"
+)
+fit_egarch_gbp <- ugarchfit(spec = spec_egarch_gbp, data = logreturns$GBPUSD)
+fit_egarch_gbp
+fit_egarch_gbp@fit$persistence
+```
+
+### EGARCH(1,1)
+
+-   **Perzistencia** ≈ **0.9955** → vysoká zotrvačnosť šokov
+-   **Asymetria**: gamma1 = 0.0333,štatisticky významný → asymetrický
+    efekt je prítomný, ide o pákový efekt
+-   alpha1 = -0.0548, štatisticky významný → asymetria vo volatilite
+    bola potvrdená
+-   beta1 = 0.9955 → vysoká zotrvačnosť vo volatilite
+-   **Ljung-Box testy** a **ARCH LM testy** ukazujú že rezíduá nie sú
+    korelované a nebola potvrdená prítomnosťt ARCH efektu.
+-   AIC = **-7.9242**.
+
+```{r}
+# GJR(1,1) pre GBP/USD
+spec_gjr_gbp <- ugarchspec(
+  variance.model = list(model = "gjrGARCH", garchOrder = c(1,1)),
+  mean.model = list(armaOrder = c(2,3), include.mean = FALSE),
+  distribution.model = "norm"
+)
+fit_gjr_gbp <- ugarchfit(spec = spec_gjr_gbp, data = logreturns$GBPUSD)
+fit_gjr_gbp
+fit_gjr_gbp@fit$persistence
+```
+
+### GJR(1,1)
+
+-   **Perzistencia** ≈ **0.9934** → vysoká zotrvačnosť šokov
+-   beta1 = 0.9716 → vysoká zotrvačnosť vo volatilite
+-   alpha1 a gamma1 nie sú štatisticky významné
+-   **Ljung-Box testy** a **ARCH LM testy** ukazujú že rezíduá nie sú
+    korelované a nebola potvrdená prítomnosťt ARCH efektu.
+-   AIC = **-7.9194**.
+
+### Výber najvhodnejšieho modelu pre GBP/USD:
+
+Najvhodnejším modelom pre GBP/USD je **EGARCH(1,1)**: - má **najnižšie
+AIC** , - všetky parametre sú štatisticky významné (aj γ₁), - potvrdzuje
+**asymetrický efekt vo volatilite**.
+
+## Diagnostika štandardizovaných rezíduí modelu EGARCH(1,1)
+
+Po odhade modelu EGARCH(1,1) boli vypočítané **štandardizované reziduá**
+(reziduá delené štandardnou odchýlkou) a ich **štvorce**, na ktoré boli
+aplikované nasledujúce testy:
+
+-   **Ljung-Box test** na reziduá a štvorce rezíduí – testuje
+    nekorelovanosť ,
+-   **ARCH LM test** – testuje prítomnosť zvyškového ARCH efektu,
+-   **Jarque-Bera test** – testuje normalitu rozdelenia rezíduí.
+
+### Výsledky pre EUR/USD (EGARCH model):
+
+```{r}
+# Výpočet štandardizovaných rezíduí z EGARCH modelu pre EUR/USD
+egarch_eur.st.res <- fit_egarch_eur@fit$residuals / fit_egarch_eur@fit$sigma
+```
+
+```{r}
+# Inicializácia
+max_lag <- max_lag
+stat <- p_value <- df <- numeric()
+stat_sq <- p_value_sq <- df_sq <- numeric()
+
+# Testy na reziduá a ich štvorce
+for (x in 3:max_lag) {
+  test <- Box.test(egarch_eur.st.res, lag = x, type = "Ljung", fitdf = 1)
+  stat[x] <- test$statistic
+  p_value[x] <- test$p.value
+  df[x] <- test$parameter
+  
+  test <- Box.test(egarch_eur.st.res^2, lag = x, type = "Ljung", fitdf = 1)
+  stat_sq[x] <- test$statistic
+  p_value_sq[x] <- test$p.value
+  df_sq[x] <- test$parameter
+}
+
+# Výsledné tabuľky
+ljung_eur_table <- cbind(Lag = 3:max_lag, Stat = stat[3:max_lag], P_value = p_value[3:max_lag])
+ljung_eur_sq_table <- cbind(Lag = 3:max_lag, Stat = stat_sq[3:max_lag], P_value = p_value_sq[3:max_lag])
+
+#ljung_eur_table
+#ljung_eur_sq_table
+```
+
+```{r}
+# --- ARCH LM test na zvyškovú heteroskedasticitu ---
+ArchTest(egarch_eur.st.res, lags = 1)
+
+# --- Jarque-Bera test na normalitu štandardizovaných rezíduí ---
+jarque.bera.test(egarch_eur.st.res)
+```
+
+-   **Ljung-Box test na štandardizované reziduá:** nezamietame H₀,
+    reziduá sú nekorelované,
+-   **Ljung-Box test na štvorce štandardizovaných rezíduí:** nie je
+    prítomný zvyškový ARCH efekt,
+-   **ARCH LM test:** Chi² = 0.997, p = 0.318 → nezamietame H₀, žiadna
+    zvyšková heteroskedasticit\*,
+-   **Jarque-Bera test:** X² = 140.14, p \< 2.2e-16 → zamietame H₀,
+    reziduá nie sú normálne rozdelené.
+
+### Výsledky pre GBP/USD (EGARCH model):
+
+```{r}
+# Výpočet štandardizovaných rezíduí z EGARCH modelu pre GBP/USD
+egarch.st.res <- fit_egarch_gbp@fit$residuals / fit_egarch_gbp@fit$sigma
+```
+
+```{r}
+# --- Ljung-Box test na štandardizované reziduá ---
+stat <- c()
+p_value <- c()
+df <- c()
+
+# --- Ljung-Box test na štvorce štandardizovaných rezíduí ---
+stat_sq <- c()
+p_value_sq <- c()
+df_sq <- c()
+
+
+for (x in 6:max_lag) {
+  test <- Box.test(egarch.st.res, lag = x, type = "Ljung", fitdf = 5)
+  stat[x] <- test$statistic
+  p_value[x] <- test$p.value
+  df[x] <- test$parameter
+  
+  
+  test <- Box.test(egarch.st.res^2, lag = x, type = "Ljung", fitdf = 5)
+  stat_sq[x] <- test$statistic
+  p_value_sq[x] <- test$p.value
+  df_sq[x] <- test$parameter
+}
+
+ljung_res_table <- cbind(Lag = 6:50, Stat = stat[6:50], P_value = p_value[6:50], DF = df[6:50])
+ljung_res_sq_table <- cbind(Lag = 6:100, Stat = stat_sq[6:100], P_value = p_value_sq[6:100], DF = df_sq[6:100])
+
+
+#ljung_res_table
+#ljung_res_sq_table
+```
+
+```{r}
+# --- ARCH LM test na zvyškovú heteroskedasticitu ---
+library(FinTS)
+ArchTest(egarch.st.res, lags = 1)
+
+# --- Jarque-Bera test na normalitu štandardizovaných rezíduí ---
+library(tseries)
+jarque.bera.test(egarch.st.res)
+```
+
+-   **Ljung-Box test na štandardizované reziduá:** nezamietame H₀,
+    reziduá sú nekorelované,
+-   **Ljung-Box test na štvorce štandardizovaných rezíduí:** nie je
+    prítomný zvyškový ARCH efekt,
+-   **ARCH LM test:**
+    -   Chi² = 0.6876, p-value = 0.407 → **nezamietame H₀**, **žiadna
+        zvyšková heteroskedasticita**,
+-   **Jarque-Bera test:**
+    -   X² = 98.447, p-value \< 2.2e-16 → **zamietame H₀**, **reziduá
+        nie sú normálne rozdelené**.
+
+# 5. Jednodňová predikcia (statická prognóza)
+
+Na základe predchádzajúcej analýzy boli pre obidva menové páry ako
+najvhodnejšie modely zvolené **EGARCH(1,1)** modely.
+
+```{r}
+# --- Jednodňová predikcia pre EUR/USD ---
+forecast_eur <- ugarchforecast(fit_egarch_eur, n.ahead = 1)
+forecast_eur
+```
+
+##### EUR/USD
+
+-   **Predikovaný výnos (logaritmický):** –0.0001126
+-   **Predikovaná volatilita (σ):** 0.004288
+
+```{r}
+# --- Jednodňová predikcia pre GBP/USD ---
+forecast_gbp <- ugarchforecast(fit_egarch_gbp, n.ahead = 1)
+forecast_gbp
+forecast_gbp@forecast$seriesFor
+```
+
+##### GBP/USD
+
+-   **Predikovaný výnos (logaritmický):** –0.0002219
+-   **Predikovaná volatilita (σ):** 0.004591
+
+# 6. Prieŕezová štandardná odchýlka
+
+Na preskúmanie spoločného vývoja výnosov menových párov **EUR/USD** a
+**GBP/USD** boli využité nasledujúce štatistiky:
+
+## Nepodmienený korelačný koeficient
+
+```{r}
+correlation <- cor(logreturns$EURUSD, logreturns$GBPUSD)
+correlation
+```
+
+Hodnota korelačného koeficienta **0.758** naznačuje, že ak sa zvýši
+výnos jedného menového páru, s veľkou pravdepodobnosťou sa zvýši aj
+výnos druhého. To potvrdzuje, že **menové páry sú navzájom silno
+prepojené** a majú podobný vývoj v čase.
+
+```{r}
+# Prierezová štandardná odchýlka pre každý deň
+cross_sd <- apply(logreturns, 1, sd)
+
+# Základné štatistiky o prierezovej štandardnej odchýlke
+summary(cross_sd)
+
+#graf prieŕezovej štandardnej odchýlky
+plot(cross_sd, type = "l", main = "Prierezova standardna odchylka v case", ylab = "σ_t", xlab = "Datum")
+
+```
+
+-   **Minimum (0.0000016)**: značí veľmi podobné výnosy v daný deň.
+-   **Maximum (0.0136)**: poukazuje na deň s výrazne odlišnými výnosmi
+    medzi EUR/USD a GBP/USD.
+-   **Medián (0.0012)** a **priemer (0.0017)** naznačujú, že priemerný
+    rozdiel medzi oboma výnosmi bol pomerne malý.
+
+Z grafu prieŕezovej štandardnej odchýlky vidíme, že: - v čase okolo
+400–450 dní nastáva výrazný výkyv (pravdepodobne spojený s volatilným
+obdobím na trhu), - následne sa rozdiely medzi výnosmi stabilizujú.
